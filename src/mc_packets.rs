@@ -1,35 +1,44 @@
 type VarInt = i32;
 
-fn write_varint(vector: &mut Vec<u8>, value: VarInt) {
-    let mut tmp = value as u32;
-    loop {
-        if tmp & (!0x0000007F) == 0 {
-            vector.push((tmp & 0xFF) as u8);
-            break;
-        }
+trait VarIntExt {
+    fn append_as_varint(&self, vector: &mut Vec<u8>) -> ();
+    fn from_varint<'a, I: Iterator<Item = &'a u8>>(iter: &mut I) -> Self;
+}
 
-        vector.push((((tmp & 0x7f) | 0x80) & 0xFF) as u8);
-        tmp = tmp >> 7;
+impl VarIntExt for i32 {
+    fn append_as_varint(&self, vector: &mut Vec<u8>) {
+        let mut tmp = *self as u32;
+        loop {
+            if tmp & (!0x0000007F) == 0 {
+                vector.push((tmp & 0xFF) as u8);
+                break;
+            }
+    
+            vector.push((((tmp & 0x7f) | 0x80) & 0xFF) as u8);
+            tmp = tmp >> 7;
+        }
+    }
+
+    fn from_varint<'a, I: Iterator<Item = &'a u8>>(iter: &mut I) -> VarInt {
+        let mut ret: VarInt = 0;
+        let mut pos: i32 = 0;
+        loop {
+            let current = iter.next().expect("VarInt shorter than expected");
+            ret |= ((current & 0x7F) as i32) << pos;
+            if (current & 0x80) == 0 {
+                break;
+            }
+    
+            pos += 7;
+            if pos >= 32 {
+                
+            }
+        }
+        ret
     }
 }
 
-fn read_varint<'a, I: Iterator<Item = &'a u8>>(iter: &mut I) -> VarInt {
-    let mut ret: VarInt = 0;
-    let mut pos: i32 = 0;
-    loop {
-        let current = iter.next().expect("VarInt shorter than expected");
-        ret |= ((current & 0x7F) as i32) << pos;
-        if (current & 0x80) == 0 {
-            break;
-        }
 
-        pos += 7;
-        if pos >= 32 {
-            
-        }
-    }
-    ret
-}
 
 pub trait Sendable {
     fn serialize_to(&self) -> Vec<u8>;
@@ -57,19 +66,19 @@ impl Handshake {
 impl Sendable for Handshake {
     fn serialize_to(&self) -> Vec<u8> {
         let mut packet_data: Vec<u8> = Vec::new();
-        write_varint(&mut packet_data, self.id);
-        write_varint(&mut packet_data, self.protocol_version);
+        self.id.append_as_varint(&mut packet_data);
+        self.protocol_version.append_as_varint(&mut packet_data);
         let string_length:VarInt = self.server_address.len().try_into().unwrap();
-        write_varint(&mut packet_data, string_length);
+        string_length.append_as_varint(&mut packet_data);
         let addr_bytes = &mut self.server_address.clone().into_bytes().to_vec();
         packet_data.append(addr_bytes);
         let port_bytes = &mut self.server_port.to_be_bytes().to_vec();
         packet_data.append(port_bytes);
-        write_varint(&mut packet_data, self.next_state);
+        self.next_state.append_as_varint(&mut packet_data);
 
         let packet_len: VarInt = packet_data.len().try_into().unwrap();
         let mut packet = Vec::<u8>::new();
-        write_varint(&mut packet, packet_len);
+        packet_len.append_as_varint(&mut packet);
         packet.append(&mut packet_data);
         return packet;
     }
@@ -91,7 +100,7 @@ impl Sendable for StatusRequest {
 }
 
 pub struct StatusResponse {
-    pub status: String
+    pub status: serde_json::Value
 }
 
 pub enum ReceivablePacket {
@@ -101,12 +110,14 @@ pub enum ReceivablePacket {
 impl ReceivablePacket {
     pub fn deserialize_from(resp: &Vec<u8>) -> Result<ReceivablePacket, &'static str> {
         let mut it = resp.iter();
-        let _length = read_varint(&mut it);
-        let id = read_varint(&mut it);
+        let _length = VarInt::from_varint(&mut it);
+        let id = VarInt::from_varint(&mut it);
         match id {
             0x00 => {
-                let length = read_varint(&mut it);
-                let status = String::from_utf8(it.take(length as usize).map(|value| *value).collect::<Vec<u8>>()).unwrap();
+                let length = VarInt::from_varint(&mut it);
+                let status = serde_json::from_str(&String::from_utf8(it.take(length as usize)
+                                                                                    .map(|value| *value)
+                                                                                    .collect::<Vec<u8>>()).unwrap().replace(|chr: char| !chr.is_ascii_graphic() && !chr.is_whitespace(), "")).unwrap();
                 //return Ok(ReceivablePacket::StatusResponse {0: StatusResponse { status: status}});
                 return Ok(ReceivablePacket::StatusResponse (StatusResponse {status: status }));
             },

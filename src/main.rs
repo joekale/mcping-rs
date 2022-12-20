@@ -34,7 +34,6 @@ fn main() {
         panic!("Failed to write StatusRequest Packet: {:?}", srq_res.err());
     }
 
-    //expecting status response
     let buf = &mut Vec::<u8>::new();
     let resp = stream.read_to_end(buf);
     let read_size = match resp {
@@ -48,10 +47,10 @@ fn main() {
         let received = mc_packets::ReceivablePacket::deserialize_from(buf).unwrap();
 
         let json_resp: serde_json::Value = match received {
-            mc_packets::ReceivablePacket::StatusResponse(packet) => serde_json::from_str(&packet.status).unwrap(),
+            mc_packets::ReceivablePacket::StatusResponse(packet) => packet.status,
         };
 
-        print!("{:?}", json_resp);
+        print!("{}", json_resp);
     } else {
         println!("Received no bytes back from read");
     }
