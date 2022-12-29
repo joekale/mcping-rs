@@ -8,6 +8,10 @@ use std::io::Read;
 pub mod mc_packets;
 
 use clap::Parser;
+use log::debug;
+use log::error;
+use log::info;
+use log::warn;
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -131,21 +135,89 @@ fn test_merge_multiple_overlap() {
                                                 (u32::from(Ipv4Addr::new(192,168,4,0)), u32::from(Ipv4Addr::new(192,168,4,255)))].into_iter().collect());
 }
 
-fn main() {
-    let app_cli = Args::parse();
-    println!("MineCraft Ping!");
+fn try_addr(addr: &SocketAddr) -> Option<serde_json::Value> {
+    let mut stream = match TcpStream::connect_timeout(addr, Duration::new(1, 0)) {
+        Ok(x) => x,
+        Err(err) => {
+            debug!("Failed to connect to {}: {}", addr.ip().to_string(), err);
+            return None
+        }
+    };
+    let _ = stream.set_read_timeout(Some(Duration::new(1, 0)));
 
-    println!("include: {:#?}", app_cli.include);
-    println!("exclude: {:#?}", app_cli.exclude);
+    let mut hsp = mc_packets::Handshake::new();
+    hsp.server_address = addr.ip().to_string();
+
+    let hs_bytes = hsp.serialize_to();
+    if stream.write(hs_bytes.as_slice()).is_err() {
+        error!("{}: Connected to socket, but writing handshake failed.", hsp.server_address);
+        stream.shutdown(Shutdown::Both).unwrap();
+        return None
+    }
+
+    let status_req_packet = mc_packets::StatusRequest::new();
+    let srq_bytes = status_req_packet.serialize_to();
+    if stream.write(&srq_bytes.as_slice()).is_err() {
+        error!("{}: Connected to socket, but writing StatusRequest failed.", hsp.server_address);
+        stream.shutdown(Shutdown::Both).unwrap();
+        return None
+    }
+
+    let buf = &mut Vec::<u8>::new();
+    let resp = stream.read_to_end(buf);
+    let read_size = match resp {
+        Ok(read) => read,
+        Err(error) => {
+            error!("{}: Connected to socket, but reading response failed: {}", hsp.server_address, error);
+            stream.shutdown(Shutdown::Both).unwrap();
+            return None
+        },
+    };
+
+    if read_size > 0 {
+        let received = match mc_packets::ReceivablePacket::deserialize_from(buf) {
+            Ok(x) => Some(x),
+            Err(error) => {
+                error!("Failed to deserialize recieved packet from Server: {}", error);
+                None
+            }
+        };
+
+        match received {
+            Some(mc_packets::ReceivablePacket::StatusResponse(packet)) => Some(packet.status),
+            _ => None
+        }
+    } else {
+        error!("Received no bytes back from read");
+        return None
+    }
+}
+
+fn main() {
+    env_logger::init();
+    let app_cli = Args::parse();
+    info!("MineCraft Scanner!");
 
     let mut include_ranges = HashSet::<(u32, u32)>::new();
     for cidr_str in &app_cli.include {
-        include_ranges.insert(range_from_cidr(cidr_str).unwrap());
+        include_ranges.insert(match range_from_cidr(cidr_str) {
+            Ok(x) => x,
+            Err(error) => {
+                warn!("Bad CIDR provided as include: {}. Skipping.", error);
+                continue
+            }
+        });
     }
 
     let mut exclude_ranges = HashSet::<(u32, u32)>::new();
     for cidr_str in &app_cli.exclude {
-        exclude_ranges.insert(range_from_cidr(cidr_str).unwrap());
+        exclude_ranges.insert(match range_from_cidr(cidr_str) {
+            Ok(x) => x,
+            Err(error) => {
+                warn!("Bad CIDR provided as exclude: {}. Skipping.", error);
+                continue
+            }
+        });
     }
 
     let scan_ranges = merge_include_and_exclude_ranges(&include_ranges, &exclude_ranges);
@@ -154,64 +226,10 @@ fn main() {
     for range in scan_ranges {
         for ip in range.0 ..= range.1 {
             let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), port);
-            let mut stream = match TcpStream::connect_timeout(&addr, Duration::new(1, 0)) {
-                Ok(x) => x,
-                Err(err) => {
-                    if app_cli.verbose {
-                        println!("Failed to connect to {}: {}", addr.ip().to_string(), err);
-                    }
-                    continue
-                }
-            };
-            let _ = stream.set_read_timeout(Some(Duration::new(1, 0)));
-
-            let mut hsp = mc_packets::Handshake::new();
-            hsp.server_address = addr.ip().to_string();
-
-            let hs_bytes = hsp.serialize_to();
-            if stream.write(hs_bytes.as_slice()).is_err() {
-                if app_cli.verbose {
-                    println!("Connected to socket, but writing handshake failed.");
-                }
-                stream.shutdown(Shutdown::Both).unwrap();
-                continue
+            let resp = try_addr(&addr);
+            if resp.is_some() {
+                info!("{}", resp.unwrap());
             }
-
-            let status_req_packet = mc_packets::StatusRequest::new();
-            let srq_bytes = status_req_packet.serialize_to();
-            if stream.write(&srq_bytes.as_slice()).is_err() {
-                if app_cli.verbose {
-                    println!("Connected to socket, but writing StatusRequest failed.");
-                }
-                stream.shutdown(Shutdown::Both).unwrap();
-                continue
-            }
-
-            let buf = &mut Vec::<u8>::new();
-            let resp = stream.read_to_end(buf);
-            let read_size = match resp {
-                Ok(read) => read,
-                Err(error) => {
-                    if app_cli.verbose {
-                        println!("Connected to socket, but reading response failed: {}", error);
-                    }
-                    stream.shutdown(Shutdown::Both).unwrap();
-                    continue
-                },
-            };
-
-            if read_size > 0 {
-                let received = mc_packets::ReceivablePacket::deserialize_from(buf).unwrap();
-
-                let json_resp: serde_json::Value = match received {
-                    mc_packets::ReceivablePacket::StatusResponse(packet) => packet.status,
-                };
-
-                print!("{}", json_resp);
-            } else {
-                println!("Received no bytes back from read");
-            }
-
         }
     }
     
