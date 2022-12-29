@@ -26,9 +26,6 @@ struct Args {
    /// IP Addresses to exclude from scan (CIDR Notation). Can be passed multiple timest
    #[arg(short, long)]
    exclude: Vec<String>,
-
-   #[arg(short, long)]
-   verbose: bool
 }
 
 fn range_from_cidr(cidr_str: &str) -> Result<(u32, u32), &'static str> {
