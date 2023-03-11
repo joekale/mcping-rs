@@ -1,4 +1,4 @@
-use std::net::{TcpStream, Shutdown, SocketAddr, IpAddr, Ipv4Addr};
+use std::net::{TcpStream, Shutdown, SocketAddr, IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -26,6 +26,14 @@ struct Args {
    /// IP Addresses to exclude from scan (CIDR Notation). Can be passed multiple timest
    #[arg(short, long)]
    exclude: Vec<String>,
+
+   /// Hostname to test. Ignores include and exclude
+   #[arg(long)]
+   host: String,
+
+   /// Port number to use.
+   #[arg(long, default_value_t = 25565)]
+   port: u16,
 }
 
 fn range_from_cidr(cidr_str: &str) -> Result<(u32, u32), &'static str> {
@@ -52,7 +60,7 @@ fn range_from_cidr(cidr_str: &str) -> Result<(u32, u32), &'static str> {
     };
 
     let ip_int = u32::from(ip);
-    let mask = !(0xffffffff >> mask_length); // shift down and bitwise not
+    let mask = if mask_length >= 32 {0xffffffff} else { !(0xffffffff >> mask_length)}; // shift down and bitwise not
     let start = ip_int & mask;
     let end = start | !mask;
 
@@ -132,7 +140,7 @@ fn test_merge_multiple_overlap() {
                                                 (u32::from(Ipv4Addr::new(192,168,4,0)), u32::from(Ipv4Addr::new(192,168,4,255)))].into_iter().collect());
 }
 
-fn try_addr(addr: &SocketAddr) -> Option<serde_json::Value> {
+fn try_addr(addr: &SocketAddr, hostname: Option<&String>) -> Option<serde_json::Value> {
     let mut stream = match TcpStream::connect_timeout(addr, Duration::new(1, 0)) {
         Ok(x) => x,
         Err(err) => {
@@ -140,10 +148,13 @@ fn try_addr(addr: &SocketAddr) -> Option<serde_json::Value> {
             return None
         }
     };
-    let _ = stream.set_read_timeout(Some(Duration::new(1, 0)));
+    let _ = stream.set_read_timeout(Some(Duration::new(10, 0)));
 
     let mut hsp = mc_packets::Handshake::new();
-    hsp.server_address = addr.ip().to_string();
+    hsp.server_address = match hostname {
+        Some(hostname) => hostname.to_owned(),
+        None => addr.ip().to_string(),
+    };
 
     let hs_bytes = hsp.serialize_to();
     if stream.write(hs_bytes.as_slice()).is_err() {
@@ -195,39 +206,65 @@ fn main() {
     let app_cli = Args::parse();
     info!("MineCraft Scanner!");
 
-    let mut include_ranges = HashSet::<(u32, u32)>::new();
-    for cidr_str in &app_cli.include {
-        include_ranges.insert(match range_from_cidr(cidr_str) {
-            Ok(x) => x,
-            Err(error) => {
-                warn!("Bad CIDR provided as include: {}. Skipping.", error);
-                continue
-            }
-        });
-    }
+    let port = app_cli.port;
 
-    let mut exclude_ranges = HashSet::<(u32, u32)>::new();
-    for cidr_str in &app_cli.exclude {
-        exclude_ranges.insert(match range_from_cidr(cidr_str) {
-            Ok(x) => x,
-            Err(error) => {
-                warn!("Bad CIDR provided as exclude: {}. Skipping.", error);
-                continue
-            }
-        });
-    }
-
-    let scan_ranges = merge_include_and_exclude_ranges(&include_ranges, &exclude_ranges);
-    let port: u16 = 25565;
-
-    for range in scan_ranges {
-        for ip in range.0 ..= range.1 {
-            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), port);
-            let resp = try_addr(&addr);
-            if resp.is_some() {
-                info!("{}", resp.unwrap());
+    if app_cli.host.is_empty() {
+        let mut include_ranges = HashSet::<(u32, u32)>::new();
+        for cidr_str in &app_cli.include {
+            include_ranges.insert(match range_from_cidr(cidr_str) {
+                Ok(x) => x,
+                Err(error) => {
+                    warn!("Bad CIDR provided as include: {}. Skipping.", error);
+                    continue
+                }
+            });
+        }
+    
+        let mut exclude_ranges = HashSet::<(u32, u32)>::new();
+        for cidr_str in &app_cli.exclude {
+            exclude_ranges.insert(match range_from_cidr(cidr_str) {
+                Ok(x) => x,
+                Err(error) => {
+                    warn!("Bad CIDR provided as exclude: {}. Skipping.", error);
+                    continue
+                }
+            });
+        }
+    
+        let scan_ranges = merge_include_and_exclude_ranges(&include_ranges, &exclude_ranges);
+    
+        for range in scan_ranges {
+            for ip in range.0 ..= range.1 {
+                let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), port);
+                let resp = try_addr(&addr, None);
+                if resp.is_some() {
+                    info!("{}", resp.unwrap());
+                }
             }
         }
+    } else {
+        let full_address = app_cli.host.clone() + ":" + port.to_string().as_str();
+        let addr = match full_address.to_socket_addrs() {
+            Ok(mut addrs) => {
+                let next = addrs.next();
+                next
+            },
+            Err(error) => {
+                error!("Invalid Host Provided: {}", error);
+                return;
+            }
+        };
+        let resp = match addr {
+            Some(addr) => try_addr(&addr, Some(&app_cli.host)),
+            None => {
+                error!("Hostname did not resolve to an address.");
+                return;
+            }
+        };
+        if resp.is_some() {
+            info!("{}", resp.unwrap());
+        }
     }
+    
     
 }

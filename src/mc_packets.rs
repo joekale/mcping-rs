@@ -137,6 +137,7 @@ impl Sendable for StatusRequest {
     }
 }
 
+#[derive(Debug)]
 pub struct StatusResponse {
     pub status: serde_json::Value
 }
