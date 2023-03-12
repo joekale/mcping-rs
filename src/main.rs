@@ -19,21 +19,34 @@ use log::warn;
 #[command(version = "0.1.0")] 
 #[command(about = "Scans IP Addresses for MineCraft Servers.", long_about = None)]
 struct Args {
-   /// IP Addresses to include in scan (CIDR Notation). Can be passed multiple times
-   #[arg(short, long, )]
-   include: Vec<String>,
+    #[command(subcommand)]
+    action: Action,
+}
 
-   /// IP Addresses to exclude from scan (CIDR Notation). Can be passed multiple timest
-   #[arg(short, long)]
-   exclude: Vec<String>,
+#[derive(clap::Subcommand, Debug)]
+enum Action {
+    Scan {
+        /// IP Addresses to include in scan (CIDR Notation). Can be passed multiple times
+        #[arg(short, long, )]
+        include: Vec<String>,
 
-   /// Hostname to test. Ignores include and exclude
-   #[arg(long)]
-   host: String,
+        /// IP Addresses to exclude from scan (CIDR Notation). Can be passed multiple timest
+        #[arg(short, long)]
+        exclude: Vec<String>,
 
-   /// Port number to use.
-   #[arg(long, default_value_t = 25565)]
-   port: u16,
+        /// Port number to use.
+        #[arg(long, default_value_t = 25565)]
+        port: u16,
+    },
+    Single {
+        /// Hostname to test. Ignores include and exclude
+        #[arg(long)]
+        host: String,
+
+        /// Port number to use.
+        #[arg(long, default_value_t = 25565)]
+        port: u16,
+    }
 }
 
 fn range_from_cidr(cidr_str: &str) -> Result<(u32, u32), &'static str> {
@@ -206,65 +219,66 @@ fn main() {
     let app_cli = Args::parse();
     info!("MineCraft Scanner!");
 
-    let port = app_cli.port;
-
-    if app_cli.host.is_empty() {
-        let mut include_ranges = HashSet::<(u32, u32)>::new();
-        for cidr_str in &app_cli.include {
-            include_ranges.insert(match range_from_cidr(cidr_str) {
-                Ok(x) => x,
+    match &app_cli.action {
+        Action::Scan {include, exclude, port} => {
+            let mut include_ranges = HashSet::<(u32, u32)>::new();
+            for cidr_str in include {
+                include_ranges.insert(match range_from_cidr(cidr_str) {
+                    Ok(x) => x,
+                    Err(error) => {
+                        warn!("Bad CIDR provided as include: {}. Skipping.", error);
+                        continue
+                    }
+                });
+            }
+        
+            let mut exclude_ranges = HashSet::<(u32, u32)>::new();
+            for cidr_str in exclude {
+                exclude_ranges.insert(match range_from_cidr(cidr_str) {
+                    Ok(x) => x,
+                    Err(error) => {
+                        warn!("Bad CIDR provided as exclude: {}. Skipping.", error);
+                        continue
+                    }
+                });
+            }
+        
+            let scan_ranges = merge_include_and_exclude_ranges(&include_ranges, &exclude_ranges);
+        
+            for range in scan_ranges {
+                for ip in range.0 ..= range.1 {
+                    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), *port);
+                    let resp = try_addr(&addr, None);
+                    if resp.is_some() {
+                        info!("{}", resp.unwrap());
+                    }
+                }
+            }
+        },
+        Action::Single {host, port} => {
+            let full_address = host.clone() + ":" + port.to_string().as_str();
+            let addr = match full_address.to_socket_addrs() {
+                Ok(mut addrs) => {
+                    let next = addrs.next();
+                    next
+                },
                 Err(error) => {
-                    warn!("Bad CIDR provided as include: {}. Skipping.", error);
-                    continue
+                    error!("Invalid Host Provided: {}", error);
+                    return;
                 }
-            });
-        }
-    
-        let mut exclude_ranges = HashSet::<(u32, u32)>::new();
-        for cidr_str in &app_cli.exclude {
-            exclude_ranges.insert(match range_from_cidr(cidr_str) {
-                Ok(x) => x,
-                Err(error) => {
-                    warn!("Bad CIDR provided as exclude: {}. Skipping.", error);
-                    continue
+            };
+            let resp = match addr {
+                Some(addr) => try_addr(&addr, Some(&host)),
+                None => {
+                    error!("Hostname did not resolve to an address.");
+                    return;
                 }
-            });
-        }
-    
-        let scan_ranges = merge_include_and_exclude_ranges(&include_ranges, &exclude_ranges);
-    
-        for range in scan_ranges {
-            for ip in range.0 ..= range.1 {
-                let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), port);
-                let resp = try_addr(&addr, None);
-                if resp.is_some() {
-                    info!("{}", resp.unwrap());
-                }
+            };
+            if resp.is_some() {
+                info!("{}", resp.unwrap());
             }
         }
-    } else {
-        let full_address = app_cli.host.clone() + ":" + port.to_string().as_str();
-        let addr = match full_address.to_socket_addrs() {
-            Ok(mut addrs) => {
-                let next = addrs.next();
-                next
-            },
-            Err(error) => {
-                error!("Invalid Host Provided: {}", error);
-                return;
-            }
-        };
-        let resp = match addr {
-            Some(addr) => try_addr(&addr, Some(&app_cli.host)),
-            None => {
-                error!("Hostname did not resolve to an address.");
-                return;
-            }
-        };
-        if resp.is_some() {
-            info!("{}", resp.unwrap());
-        }
-    }
+    };
     
     
 }
