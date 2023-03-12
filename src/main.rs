@@ -161,7 +161,7 @@ fn try_addr(addr: &SocketAddr, hostname: Option<&String>) -> Option<serde_json::
             return None
         }
     };
-    let _ = stream.set_read_timeout(Some(Duration::new(10, 0)));
+    let _ = stream.set_read_timeout(Some(Duration::new(31, 0)));
 
     let mut hsp = mc_packets::Handshake::new();
     hsp.server_address = match hostname {
