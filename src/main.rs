@@ -276,7 +276,6 @@ fn main() {
                 for ip in range.0 ..= range.1 {
                     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), *port);
                     pool.execute(move || {
-                        info!("trying address {addr}");
                         let resp = try_addr(&addr, None);
                         if resp.is_some() {
                             info!("{}", resp.unwrap());
