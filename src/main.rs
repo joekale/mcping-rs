@@ -7,6 +7,7 @@ use crate::mc_packets::{Sendable, PingRequest};
 use std::io::Write;
 use std::io::Read;
 pub mod mc_packets;
+use mcscan_rs::ThreadPool;
 
 use clap::Parser;
 use log::debug;
@@ -38,6 +39,10 @@ enum Action {
         /// Port number to use.
         #[arg(long, default_value_t = 25565)]
         port: u16,
+
+        /// threads to use.
+        #[arg(long, default_value_t = 1)]
+        threads: u16,
     },
     Single {
         /// Hostname to test. Ignores include and exclude
@@ -241,7 +246,7 @@ fn main() {
     info!("MineCraft Scanner!");
 
     match &app_cli.action {
-        Action::Scan {include, exclude, port} => {
+        Action::Scan {include, exclude, port, threads} => {
             let mut include_ranges = HashSet::<(u32, u32)>::new();
             for cidr_str in include {
                 include_ranges.insert(match range_from_cidr(cidr_str) {
@@ -265,16 +270,22 @@ fn main() {
             }
         
             let scan_ranges = merge_include_and_exclude_ranges(&include_ranges, &exclude_ranges);
+            let pool = ThreadPool::new(*threads as usize);
         
             for range in scan_ranges {
                 for ip in range.0 ..= range.1 {
                     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), *port);
-                    let resp = try_addr(&addr, None);
-                    if resp.is_some() {
-                        info!("{}", resp.unwrap());
-                    }
+                    pool.execute(move || {
+                        info!("trying address {addr}");
+                        let resp = try_addr(&addr, None);
+                        if resp.is_some() {
+                            info!("{}", resp.unwrap());
+                        }
+                    });
                 }
             }
+
+            info!("Exiting Scan");
         },
         Action::Single {host, port} => {
             let full_address = host.clone() + ":" + port.to_string().as_str();
