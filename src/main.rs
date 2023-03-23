@@ -1,8 +1,9 @@
 use std::net::{TcpStream, Shutdown, SocketAddr, IpAddr, Ipv4Addr, ToSocketAddrs};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::mc_packets::Sendable;
+use crate::mc_packets::{Sendable, PingRequest};
 use std::io::Write;
 use std::io::Read;
 pub mod mc_packets;
@@ -161,7 +162,7 @@ fn try_addr(addr: &SocketAddr, hostname: Option<&String>) -> Option<serde_json::
             return None
         }
     };
-    let _ = stream.set_read_timeout(Some(Duration::new(31, 0)));
+    let _ = stream.set_read_timeout(Some(Duration::new(1, 0)));
 
     let mut hsp = mc_packets::Handshake::new();
     hsp.server_address = match hostname {
@@ -188,10 +189,26 @@ fn try_addr(addr: &SocketAddr, hostname: Option<&String>) -> Option<serde_json::
     let resp = stream.read_to_end(buf);
     let read_size = match resp {
         Ok(read) => read,
-        Err(error) => {
-            error!("{}: Connected to socket, but reading response failed: {}", hsp.server_address, error);
-            stream.shutdown(Shutdown::Both).unwrap();
-            return None
+        Err(_) => {
+            debug!("Timeout reading from socket. Trying to send ping to test notchian server.");
+            let start = SystemTime::now();
+            let since_the_epoch = start
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards");
+            let ping_req = PingRequest{number: since_the_epoch.as_millis() as i64};
+            let ping_bytes = ping_req.serialize_to();
+            if stream.write(&ping_bytes.as_slice()).is_err() {
+                error!("Writing to stream failed");
+                stream.shutdown(Shutdown::Both).unwrap();
+                return None;
+            }  
+
+            let fallback_resp = stream.read_to_end(buf);
+            if fallback_resp.is_ok() {
+                fallback_resp.ok().unwrap()
+            } else {
+                return None;
+            }
         },
     };
 
@@ -206,6 +223,10 @@ fn try_addr(addr: &SocketAddr, hostname: Option<&String>) -> Option<serde_json::
 
         match received {
             Some(mc_packets::ReceivablePacket::StatusResponse(packet)) => Some(packet.status),
+            Some(mc_packets::ReceivablePacket::PingResponse(packet)) => {
+                info!("Received Ping Response instead of Status Response. Pong Number: {}", packet.number);
+                None
+            }
             _ => None
         }
     } else {

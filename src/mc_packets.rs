@@ -137,13 +137,31 @@ impl Sendable for StatusRequest {
     }
 }
 
+pub struct PingRequest {
+    pub number: i64
+}
+
+impl Sendable for PingRequest {
+    fn serialize_to(&self) -> Vec<u8> {
+        let mut packet = vec![0x09u8, 0x01];
+        packet.append(&mut self.number.to_ne_bytes().to_vec());
+        packet
+    }
+}
+
+
 #[derive(Debug)]
 pub struct StatusResponse {
     pub status: serde_json::Value
 }
 
+pub struct PingResponse {
+    pub number: i64
+}
+
 pub enum ReceivablePacket {
-    StatusResponse(StatusResponse)
+    StatusResponse(StatusResponse),
+    PingResponse(PingResponse)
 }
 
 impl ReceivablePacket {
@@ -159,6 +177,10 @@ impl ReceivablePacket {
                                                                                     .collect::<Vec<u8>>()[..]).unwrap();
                 //return Ok(ReceivablePacket::StatusResponse {0: StatusResponse { status: status}});
                 return Ok(ReceivablePacket::StatusResponse (StatusResponse {status: status }));
+            },
+            0x01 => {
+                let number = i64::from_be_bytes(it.take(8).map(|value| *value).collect::<Vec<u8>>()[..].try_into().unwrap());
+                return Ok(ReceivablePacket::PingResponse(PingResponse {number: number}));
             },
             _ => return Err("Packet ID does not match implemented Packets"),
         };
