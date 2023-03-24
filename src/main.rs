@@ -160,6 +160,21 @@ fn test_merge_multiple_overlap() {
 }
 
 fn try_addr(addr: &SocketAddr, hostname: Option<&String>) -> Option<serde_json::Value> {
+
+    match addr {
+        SocketAddr::V4(sockv4) => {
+            if sockv4.ip().octets()[3] == 0 {
+                return None
+            }
+            for val in sockv4.ip().octets() {
+                if val == 255 {
+                    return None
+                }
+            }
+        },
+        _ => return None
+    }
+
     let mut stream = match TcpStream::connect_timeout(addr, Duration::new(1, 0)) {
         Ok(x) => x,
         Err(err) => {
@@ -283,6 +298,8 @@ fn main() {
                     });
                 }
             }
+
+            pool.wait();
 
             info!("Exiting Scan");
         },
